@@ -40,7 +40,7 @@ class FixDuplicate : public Fix {
   int ninsert, ntype, nfreq, seed;
   int globalflag, localflag, maxattempt, rateflag, scaleflag, targetflag;
   int mode, rigidflag, shakeflag, idnext, distflag, orientflag;
-  int groupbit;
+  int groupbit_source, group_source;
   double lo, hi, deltasq, nearsq, rate, sigma;
   double vxlo, vxhi, vylo, vyhi, vzlo, vzhi;
   double xlo, xhi, ylo, yhi, zlo, zhi, xmid, ymid, zmid;
