@@ -44,7 +44,7 @@ class FixDuplicate : public Fix {
   double lo, hi, deltasq, nearsq, rate, sigma;
   double vxlo, vxhi, vylo, vyhi, vzlo, vzhi;
   double xlo, xhi, ylo, yhi, zlo, zhi, xmid, ymid, zmid;
-  double prob;
+  double prob, radius;
   double rx, ry, rz, tx, ty, tz;
   class Region *iregion;
   char *idregion;

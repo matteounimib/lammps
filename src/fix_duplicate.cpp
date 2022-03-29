@@ -66,6 +66,7 @@ FixDuplicate::FixDuplicate(LAMMPS *lmp, int narg, char **arg) :
   nfreq = utils::inumeric(FLERR,arg[5],false,lmp);
   seed = utils::inumeric(FLERR,arg[6],false,lmp);
   prob = utils::numeric(FLERR,arg[7],false,lmp);
+  radius = utils::numeric(FLERR,arg[8],false,lmp);
   // in case it will uses groups names
   // group_source = group->find(arg[4]);
   group_source = utils::inumeric(FLERR, arg[4], false, lmp);
@@ -73,11 +74,12 @@ FixDuplicate::FixDuplicate(LAMMPS *lmp, int narg, char **arg) :
   cout << "group: " << group_source << " " << groupbit_source ;
   cout << " arg " << arg[4] << " ntype " << ntype << endl;
   if (prob < 0.0 || prob > 1.0) error->all(FLERR, "Probability must be in [0,1] interval");
+  if (radius < 0.0) error->all(FLERR, "Radius must be greater than 0.0");
   if (seed <= 0) error->all(FLERR,"Illegal fix deposit command");
 
   // read options from end of input line
 
-  options(narg-8,&arg[8]);
+  options(narg-9,&arg[9]);
 
   // error check on type
 
@@ -86,18 +88,18 @@ FixDuplicate::FixDuplicate(LAMMPS *lmp, int narg, char **arg) :
 
   // error checks on region and its extent being inside simulation box
 
-  if (!iregion) error->all(FLERR,"Must specify a region in fix deposit");
-  if (iregion->bboxflag == 0)
-    error->all(FLERR,"Fix deposit region does not support a bounding box");
-  if (iregion->dynamic_check())
-    error->all(FLERR,"Fix deposit region cannot be dynamic");
+  // if (!iregion) error->all(FLERR,"Must specify a region in fix deposit");
+  // if (iregion->bboxflag == 0)
+  //   error->all(FLERR,"Fix deposit region does not support a bounding box");
+  // if (iregion->dynamic_check())
+  //   error->all(FLERR,"Fix deposit region cannot be dynamic");
 
-  xlo = iregion->extent_xlo;
-  xhi = iregion->extent_xhi;
-  ylo = iregion->extent_ylo;
-  yhi = iregion->extent_yhi;
-  zlo = iregion->extent_zlo;
-  zhi = iregion->extent_zhi;
+  // xlo = iregion->extent_xlo;
+  // xhi = iregion->extent_xhi;
+  // ylo = iregion->extent_ylo;
+  // yhi = iregion->extent_yhi;
+  // zlo = iregion->extent_zlo;
+  // zhi = iregion->extent_zhi;
 
   if (domain->triclinic == 0) {
     if (xlo < domain->boxlo[0] || xhi > domain->boxhi[0] ||
@@ -237,8 +239,8 @@ void FixDuplicate::init()
 {
   // set index and check validity of region
 
-  iregion = domain->get_region_by_id(idregion);
-  if (!iregion) error->all(FLERR,"Region ID {} for fix deposit does not exist", idregion);
+  // iregion = domain->get_region_by_id(idregion);
+  // if (!iregion) error->all(FLERR,"Region ID {} for fix deposit does not exist", idregion);
 
   // if rigidflag defined, check for rigid/small fix
   // its molecule template must be same as this one
@@ -318,9 +320,17 @@ void FixDuplicate::pre_exchange()
   int success = 0;
   int nlocal = atom->nlocal;
   int *mask = atom->mask;
+  double **x = atom->x;
+
   for (int q = 0; q < nlocal; q++){
      if(mask[q] & groupbit_source){
     if (random->uniform() < prob) flag_prob = 1;
+    xlo = x[q][0] - radius;
+    ylo = x[q][1] - radius;
+    zlo = x[q][2] - radius;
+    xhi = x[q][0] + radius;
+    yhi = x[q][1] + radius;
+    zhi = x[q][2] + radius;
     // just return if should not be called on this timestep
     if (next_reneighbor != update->ntimestep) return;
 
@@ -361,17 +371,18 @@ void FixDuplicate::pre_exchange()
 
       // choose random position for new particle within region
       if (distflag == DIST_UNIFORM) {
-        do {
+        // do {
           coord[0] = xlo + random->uniform() * (xhi-xlo);
           coord[1] = ylo + random->uniform() * (yhi-ylo);
           coord[2] = zlo + random->uniform() * (zhi-zlo);
-        } while (iregion->match(coord[0],coord[1],coord[2]) == 0);
+    // cout << "xlo " << xlo << endl;
+        // } while (iregion->match(coord[0],coord[1],coord[2]) == 0);
       } else if (distflag == DIST_GAUSSIAN) {
-        do {
+        // do {
           coord[0] = xmid + random->gaussian() * sigma;
           coord[1] = ymid + random->gaussian() * sigma;
           coord[2] = zmid + random->gaussian() * sigma;
-        } while (iregion->match(coord[0],coord[1],coord[2]) == 0);
+        // } while (iregion->match(coord[0],coord[1],coord[2]) == 0);
       } else error->all(FLERR,"Unknown particle distribution in fix deposit");
 
       // adjust vertical coord by offset
@@ -395,8 +406,8 @@ void FixDuplicate::pre_exchange()
           dim = 2;
           max = domain->boxlo[2];
         }
-        double **x = atom->x;
-        int nlocal = atom->nlocal;
+        // double **x = atom->x;
+        // int nlocal = atom->nlocal;
         for (i = 0; i < nlocal; i++) {
           if (localflag) {
             delx = coord[0] - x[i][0];
@@ -468,9 +479,9 @@ void FixDuplicate::pre_exchange()
       // if less than near, try again
       // use minimum_image() to account for PBC
 
-      double **x = atom->x;
-      int nlocal = atom->nlocal;
-      int *mask = atom->mask;
+      // double **x = atom->x;
+      // int nlocal = atom->nlocal;
+      // int *mask = atom->mask;
 
       flag = 0;
       for (m = 0; m < natom; m++) {
@@ -651,15 +662,6 @@ void FixDuplicate::pre_exchange()
    */
   if (ninserted < ninsert) next_reneighbor += nfreq;
   else next_reneighbor = 0;
-  // int nlocal = atom->nlocal;
-  // int *mask = atom->mask;
-  double **x = atom->x;
-  // for (int i = 0; i < nlocal; ++i){
-  //   if(mask[i] & groupbit_source){
-  //     // cout << "found" << " nlocal " << nlocal << endl;
-  //     cout << "i " << i << " mask " << mask[i] << " "<< group_source << " " << groupbit_source << endl;
-  //   }
-  // }
 }
 
 /* ----------------------------------------------------------------------
@@ -719,14 +721,14 @@ void FixDuplicate::options(int narg, char **arg)
 
   int iarg = 0;
   while (iarg < narg) {
-    if (strcmp(arg[iarg],"region") == 0) {
-      if (iarg+2 > narg) error->all(FLERR,"Illegal fix deposit command");
-      iregion = domain->get_region_by_id(arg[iarg+1]);
-      if (!iregion) error->all(FLERR,"Region ID {} for fix deposit does not exist",arg[iarg+1]);
-      idregion = utils::strdup(arg[iarg+1]);
-      iarg += 2;
-
-    } else if (strcmp(arg[iarg],"mol") == 0) {
+    // if (strcmp(arg[iarg],"region") == 0) {
+      // if (iarg+2 > narg) error->all(FLERR,"Illegal fix deposit command");
+      // iregion = domain->get_region_by_id(arg[iarg+1]);
+      // if (!iregion) error->all(FLERR,"Region ID {} for fix deposit does not exist",arg[iarg+1]);
+      // idregion = utils::strdup(arg[iarg+1]);
+      // iarg += 2;
+    // } else if (strcmp(arg[iarg],"mol") == 0) {
+    if(strcmp(arg[iarg],"mol") == 0){
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix deposit command");
       int imol = atom->find_molecule(arg[iarg+1]);
       if (imol == -1) error->all(FLERR,"Molecule template ID for fix deposit does not exist");
