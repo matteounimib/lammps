@@ -324,6 +324,7 @@ void FixDuplicate::pre_exchange()
 
   for (int q = 0; q < nlocal; q++){
      if(mask[q] & groupbit_source){
+       // cout << q << endl;
     if (random->uniform() < prob) flag_prob = 1;
     xlo = x[q][0] - radius;
     ylo = x[q][1] - radius;
@@ -375,7 +376,7 @@ void FixDuplicate::pre_exchange()
           coord[0] = xlo + random->uniform() * (xhi-xlo);
           coord[1] = ylo + random->uniform() * (yhi-ylo);
           coord[2] = zlo + random->uniform() * (zhi-zlo);
-    // cout << "xlo " << xlo << endl;
+    // cout << "attempt " << attempt << endl;
         // } while (iregion->match(coord[0],coord[1],coord[2]) == 0);
       } else if (distflag == DIST_GAUSSIAN) {
         // do {
@@ -420,7 +421,6 @@ void FixDuplicate::pre_exchange()
           }
           if (x[i][dim] > max) max = x[i][dim];
         }
-
         MPI_Allreduce(&max,&maxall,1,MPI_DOUBLE,MPI_MAX,world);
         if (dimension == 2)
           coord[1] = maxall + lo + random->uniform()*(hi-lo);
@@ -428,6 +428,8 @@ void FixDuplicate::pre_exchange()
           coord[2] = maxall + lo + random->uniform()*(hi-lo);
       }
 
+      // remap coord for PBC
+        domain->remap(coord);
       // coords = coords of all atoms
       // for molecule, perform random rotation around center pt
       // apply PBC so final coords are inside box
@@ -530,8 +532,6 @@ void FixDuplicate::pre_exchange()
       // set group mask to "all" plus fix group
       // if (random->uniform() < prob) flag_prob = 1;
       for (m = 0; m < natom; m++) {
-        // cout << "natom " << natom << endl;
-        // cout << "ntype " << ntype << endl;
         if (domain->triclinic) {
           domain->x2lamda(coords[m],lamda);
           newcoord = lamda;
@@ -645,7 +645,9 @@ void FixDuplicate::pre_exchange()
     // rebuild atom map
 
     if (atom->map_style != Atom::MAP_NONE) {
-      if (success) atom->map_init();
+      // WARNING
+      // if (success) atom->map_init();
+      if (success && flag_prob) atom->map_init();
       // cout << "DEBUG" << endl;
       atom->map_set();
     }
