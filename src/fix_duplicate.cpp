@@ -33,9 +33,14 @@
 #include "utils.h"
 #include "group.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <mpi.h>
+#include <vector>
+#include <algorithm>
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
@@ -71,8 +76,8 @@ FixDuplicate::FixDuplicate(LAMMPS *lmp, int narg, char **arg) :
   // group_source = group->find(arg[4]);
   group_source = utils::inumeric(FLERR, arg[4], false, lmp);
   groupbit_source = group->bitmask[group_source];
-  cout << "group: " << group_source << " " << groupbit_source ;
-  cout << " arg " << arg[4] << " ntype " << ntype << endl;
+  // cout << "group: " << group_source << " " << groupbit_source ;
+  // cout << " arg " << arg[4] << " ntype " << ntype << endl;
   if (prob < 0.0 || prob > 1.0) error->all(FLERR, "Probability must be in [0,1] interval");
   if (radius < 0.0) error->all(FLERR, "Radius must be greater than 0.0");
   if (seed <= 0) error->all(FLERR,"Illegal fix deposit command");
@@ -306,353 +311,391 @@ void FixDuplicate::setup_pre_exchange()
   else next_reneighbor = 0;
 }
 
+// struct added_coord{
+//   int added;
+//   double** coord;
+// };
+
 /* ----------------------------------------------------------------------
    perform particle insertion
 ------------------------------------------------------------------------- */
-
-void FixDuplicate::pre_exchange()
-{
+void FixDuplicate::generate_positions(struct added_coord *out){
   int i,m,n,nlocalprev,imol,natom,flag,flagall, flag_prob;
   double coord[3],lamda[3],delx,dely,delz,rsq;
   double r[3],vnew[3],rotmat[3][3],quat[4];
-  double *newcoord;
   flag_prob = 0;
-  int success = 0;
+  int success, added = 0;
   int nlocal = atom->nlocal;
   int *mask = atom->mask;
   double **x = atom->x;
-
+  double tempcoord[3];
+  double** localCoord = {};
+  double** coord_tmp = {};
+  vector<double*> localVel = {};
+  double *sublo,*subhi;
+  int dimension = domain->dimension;
+  int rank = 0;
+  out->coord = (double**) malloc(sizeof(double*));
   for (int q = 0; q < nlocal; q++){
-     if(mask[q] & groupbit_source){
-       // cout << q << endl;
-    if (random->uniform() < prob) flag_prob = 1;
-    xlo = x[q][0] - radius;
-    ylo = x[q][1] - radius;
-    zlo = x[q][2] - radius;
-    xhi = x[q][0] + radius;
-    yhi = x[q][1] + radius;
-    zhi = x[q][2] + radius;
-    // just return if should not be called on this timestep
-    if (next_reneighbor != update->ntimestep) return;
+    if(mask[q] & groupbit_source){
+      flag_prob = 0;
+      if (random->uniform() < prob) flag_prob = 1;
+      xlo = x[q][0] - radius;
+      ylo = x[q][1] - radius;
+      zlo = x[q][2] - radius;
+      xhi = x[q][0] + radius;
+      yhi = x[q][1] + radius;
+      zhi = x[q][2] + radius;
+      // just return if should not be called on this timestep
+      if (next_reneighbor != update->ntimestep) {
+        out->added = added;
+        out->coord = localCoord;
+      }
 
-    // clear ghost count (and atom map) and any ghost bonus data
-    //   internal to AtomVec
-    // same logic as beginning of Comm::exchange()
-    // do it now b/c inserting atoms will overwrite ghost atoms
+      // clear ghost count (and atom map) and any ghost bonus data
+      //   internal to AtomVec
+      // same logic as beginning of Comm::exchange()
+      // do it now b/c inserting atoms will overwrite ghost atoms
 
-    if (atom->map_style != Atom::MAP_NONE) atom->map_clear();
-    atom->nghost = 0;
-    atom->avec->clear_bonus();
+      if (atom->map_style != Atom::MAP_NONE) atom->map_clear();
+      atom->nghost = 0;
+      atom->avec->clear_bonus();
 
-    // compute current offset = bottom of insertion volume
+      // compute current offset = bottom of insertion volume
 
-    double offset = 0.0;
-    if (rateflag) offset = (update->ntimestep - nfirst) * update->dt * rate;
+      double offset = 0.0;
+      if (rateflag) offset = (update->ntimestep - nfirst) * update->dt * rate;
+      // moved
+      // double *sublo,*subhi;
+      if (domain->triclinic == 0) {
+        sublo = domain->sublo;
+        subhi = domain->subhi;
+      } else {
+        sublo = domain->sublo_lamda;
+        subhi = domain->subhi_lamda;
+      }
 
-    double *sublo,*subhi;
-    if (domain->triclinic == 0) {
-      sublo = domain->sublo;
-      subhi = domain->subhi;
-    } else {
-      sublo = domain->sublo_lamda;
-      subhi = domain->subhi_lamda;
-    }
+      // find current max atom and molecule IDs if necessary
 
-    // find current max atom and molecule IDs if necessary
+      // if (!idnext) find_maxid();
 
-    if (!idnext) find_maxid();
+      // attempt an insertion until successful
+      // moved
+      // int dimension = domain->dimension;
 
-    // attempt an insertion until successful
+      int attempt = 0;
+      while (attempt < maxattempt) {
+        attempt++;
 
-    int dimension = domain->dimension;
-
-    int attempt = 0;
-    while (attempt < maxattempt) {
-      attempt++;
-
-      // choose random position for new particle within region
-      if (distflag == DIST_UNIFORM) {
-        // do {
+        // choose random position for new particle within region
+        if (distflag == DIST_UNIFORM) {
+          // do {
+          // cout << "generating new coord:\n";
           coord[0] = xlo + random->uniform() * (xhi-xlo);
           coord[1] = ylo + random->uniform() * (yhi-ylo);
           coord[2] = zlo + random->uniform() * (zhi-zlo);
-    // cout << "attempt " << attempt << endl;
-        // } while (iregion->match(coord[0],coord[1],coord[2]) == 0);
-      } else if (distflag == DIST_GAUSSIAN) {
-        // do {
+          // } while (iregion->match(coord[0],coord[1],coord[2]) == 0);
+        } else if (distflag == DIST_GAUSSIAN) {
+          // do {
           coord[0] = xmid + random->gaussian() * sigma;
           coord[1] = ymid + random->gaussian() * sigma;
           coord[2] = zmid + random->gaussian() * sigma;
-        // } while (iregion->match(coord[0],coord[1],coord[2]) == 0);
-      } else error->all(FLERR,"Unknown particle distribution in fix deposit");
+          // } while (iregion->match(coord[0],coord[1],coord[2]) == 0);
+        } else error->all(FLERR,"Unknown particle distribution in fix duplicate");
 
-      // adjust vertical coord by offset
+        // adjust vertical coord by offset
 
-      if (dimension == 2) coord[1] += offset;
-      else coord[2] += offset;
+        if (dimension == 2) coord[1] += offset;
+        else coord[2] += offset;
 
-      // if global, reset vertical coord to be lo-hi above highest atom
-      // if local, reset vertical coord to be lo-hi above highest "nearby" atom
-      // local computation computes lateral distance between 2 particles w/ PBC
-      // when done, have final coord of atom or center pt of molecule
-
-      if (globalflag || localflag) {
-        int dim;
-        double max,maxall,delx,dely,delz,rsq;
-
-        if (dimension == 2) {
-          dim = 1;
-          max = domain->boxlo[1];
-        } else {
-          dim = 2;
-          max = domain->boxlo[2];
-        }
-        // double **x = atom->x;
-        // int nlocal = atom->nlocal;
-        for (i = 0; i < nlocal; i++) {
-          if (localflag) {
-            delx = coord[0] - x[i][0];
-            dely = coord[1] - x[i][1];
-            delz = 0.0;
-            domain->minimum_image(delx,dely,delz);
-            if (dimension == 2) rsq = delx*delx;
-            else rsq = delx*delx + dely*dely;
-            if (rsq > deltasq) continue;
-          }
-          if (x[i][dim] > max) max = x[i][dim];
-        }
-        MPI_Allreduce(&max,&maxall,1,MPI_DOUBLE,MPI_MAX,world);
-        if (dimension == 2)
-          coord[1] = maxall + lo + random->uniform()*(hi-lo);
-        else
-          coord[2] = maxall + lo + random->uniform()*(hi-lo);
-      }
-
-      // remap coord for PBC
+        // remap coord for PBC
         domain->remap(coord);
-      // coords = coords of all atoms
-      // for molecule, perform random rotation around center pt
-      // apply PBC so final coords are inside box
-      // also modify image flags due to PBC
+        // coords = coords of all atoms
+        // for molecule, perform random rotation around center pt
+        // apply PBC so final coords are inside box
+        // also modify image flags due to PBC
 
-      if (mode == ATOM) {
-        natom = 1;
-        coords[0][0] = coord[0];
-        coords[0][1] = coord[1];
-        coords[0][2] = coord[2];
-        imageflags[0] = ((imageint) IMGMAX << IMG2BITS) |
-          ((imageint) IMGMAX << IMGBITS) | IMGMAX;
-      } else {
-        double rng = random->uniform();
-        imol = 0;
-        while (rng > molfrac[imol]) imol++;
-        natom = onemols[imol]->natoms;
-        if (dimension == 3) {
-          if (orientflag) {
-            r[0] = rx;
-            r[1] = ry;
-            r[2] = rz;
-          } else {
-            r[0] = random->uniform() - 0.5;
-            r[1] = random->uniform() - 0.5;
-            r[2] = random->uniform() - 0.5;
-          }
-        } else {
-          r[0] = r[1] = 0.0;
-          r[2] = 1.0;
-        }
-        double theta = random->uniform() * MY_2PI;
-        MathExtra::norm3(r);
-        MathExtra::axisangle_to_quat(r,theta,quat);
-        MathExtra::quat_to_mat(quat,rotmat);
-        for (i = 0; i < natom; i++) {
-          MathExtra::matvec(rotmat,onemols[imol]->dx[i],coords[i]);
-          coords[i][0] += coord[0];
-          coords[i][1] += coord[1];
-          coords[i][2] += coord[2];
-
-          imageflags[i] = ((imageint) IMGMAX << IMG2BITS) |
+        if (mode == ATOM) {
+          natom = 1;
+          coords[0][0] = coord[0];
+          coords[0][1] = coord[1];
+          coords[0][2] = coord[2];
+          imageflags[0] = ((imageint) IMGMAX << IMG2BITS) |
             ((imageint) IMGMAX << IMGBITS) | IMGMAX;
-          domain->remap(coords[i],imageflags[i]);
+        } else {
+          double rng = random->uniform();
+          imol = 0;
+          while (rng > molfrac[imol]) imol++;
+          natom = onemols[imol]->natoms;
+          if (dimension == 3) {
+            if (orientflag) {
+              r[0] = rx;
+              r[1] = ry;
+              r[2] = rz;
+            } else {
+              r[0] = random->uniform() - 0.5;
+              r[1] = random->uniform() - 0.5;
+              r[2] = random->uniform() - 0.5;
+            }
+          } else {
+            r[0] = r[1] = 0.0;
+            r[2] = 1.0;
+          }
+          double theta = random->uniform() * MY_2PI;
+          MathExtra::norm3(r);
+          MathExtra::axisangle_to_quat(r,theta,quat);
+          MathExtra::quat_to_mat(quat,rotmat);
+          for (i = 0; i < natom; i++) {
+            MathExtra::matvec(rotmat,onemols[imol]->dx[i],coords[i]);
+            coords[i][0] += coord[0];
+            coords[i][1] += coord[1];
+            coords[i][2] += coord[2];
+
+            imageflags[i] = ((imageint) IMGMAX << IMG2BITS) |
+              ((imageint) IMGMAX << IMGBITS) | IMGMAX;
+            domain->remap(coords[i],imageflags[i]);
+          }
         }
-      }
 
-      // check distance between any existing atom and any inserted atom
-      // if less than near, try again
-      // use minimum_image() to account for PBC
-
-      // double **x = atom->x;
-      // int nlocal = atom->nlocal;
-      // int *mask = atom->mask;
-
-      flag = 0;
-      for (m = 0; m < natom; m++) {
-        for (i = 0; i < nlocal; i++) {
-          delx = coords[m][0] - x[i][0];
-          dely = coords[m][1] - x[i][1];
-          delz = coords[m][2] - x[i][2];
-          domain->minimum_image(delx,dely,delz);
-          rsq = delx*delx + dely*dely + delz*delz;
-          if (rsq < nearsq) flag = 1;
-        }
-      }
-      MPI_Allreduce(&flag,&flagall,1,MPI_INT,MPI_MAX,world);
-      if (flagall) continue;
-
-      // proceed with insertion
-
-      nlocalprev = atom->nlocal;
-
-      // choose random velocity for new particle
-      // used for every atom in molecule
-
-      vnew[0] = vxlo + random->uniform() * (vxhi-vxlo);
-      vnew[1] = vylo + random->uniform() * (vyhi-vylo);
-      vnew[2] = vzlo + random->uniform() * (vzhi-vzlo);
-
-      // if target specified, change velocity vector accordingly
-
-      if (targetflag) {
-        double vel = sqrt(vnew[0]*vnew[0] + vnew[1]*vnew[1] + vnew[2]*vnew[2]);
-        delx = tx - coord[0];
-        dely = ty - coord[1];
-        delz = tz - coord[2];
-        double rsq = delx*delx + dely*dely + delz*delz;
-        if (rsq > 0.0) {
-          double rinv = sqrt(1.0/rsq);
-          vnew[0] = delx*rinv*vel;
-          vnew[1] = dely*rinv*vel;
-          vnew[2] = delz*rinv*vel;
-        }
-      }
-
-      // check if new atoms are in my sub-box or above it if I am highest proc
-      // if so, add atom to my list via create_atom()
-      // initialize additional info about the atoms
-      // set group mask to "all" plus fix group
-      // if (random->uniform() < prob) flag_prob = 1;
-      for (m = 0; m < natom; m++) {
-        if (domain->triclinic) {
-          domain->x2lamda(coords[m],lamda);
-          newcoord = lamda;
-        } else newcoord = coords[m];
+        // check distance between any existing atom and any inserted atom
+        // if less than near, try again
+        // use minimum_image() to account for PBC
 
         flag = 0;
-        if (newcoord[0] >= sublo[0] && newcoord[0] < subhi[0] &&
-            newcoord[1] >= sublo[1] && newcoord[1] < subhi[1] &&
-            newcoord[2] >= sublo[2] && newcoord[2] < subhi[2]) flag = 1;
-        else if (dimension == 3 && newcoord[2] >= domain->boxhi[2]) {
-          if (comm->layout != Comm::LAYOUT_TILED) {
-            if (comm->myloc[2] == comm->procgrid[2]-1 &&
-                newcoord[0] >= sublo[0] && newcoord[0] < subhi[0] &&
-                newcoord[1] >= sublo[1] && newcoord[1] < subhi[1]) flag = 1;
-          } else {
-            if (comm->mysplit[2][1] == 1.0 &&
-                newcoord[0] >= sublo[0] && newcoord[0] < subhi[0] &&
-                newcoord[1] >= sublo[1] && newcoord[1] < subhi[1]) flag = 1;
-          }
-        } else if (dimension == 2 && newcoord[1] >= domain->boxhi[1]) {
-          if (comm->layout != Comm::LAYOUT_TILED) {
-            if (comm->myloc[1] == comm->procgrid[1]-1 &&
-                newcoord[0] >= sublo[0] && newcoord[0] < subhi[0]) flag = 1;
-          } else {
-            if (comm->mysplit[1][1] == 1.0 &&
-                newcoord[0] >= sublo[0] && newcoord[0] < subhi[0]) flag = 1;
+        for (m = 0; m < natom; m++) {
+          for (i = 0; i < nlocal; i++) {
+            delx = coords[m][0] - x[i][0];
+            dely = coords[m][1] - x[i][1];
+            delz = coords[m][2] - x[i][2];
+            domain->minimum_image(delx,dely,delz);
+            rsq = delx*delx + dely*dely + delz*delz;
+            if (rsq < nearsq) flag = 1;
           }
         }
-        if (flag && flag_prob) {
-          if (mode == ATOM) atom->avec->create_atom(ntype,coords[m]);
-          else atom->avec->create_atom(ntype+onemols[imol]->type[m],coords[m]);
-          n = atom->nlocal - 1;
-          atom->tag[n] = maxtag_all + m+1;
-          if (mode == MOLECULE) {
-            if (atom->molecule_flag) {
-              if (onemols[imol]->moleculeflag) {
-                atom->molecule[n] = maxmol_all + onemols[imol]->molecule[m];
-              } else {
-                atom->molecule[n] = maxmol_all+1;
+        // MPI_Allreduce(&flag,&flagall,1,MPI_INT,MPI_MAX,world);
+        // if (flagall) continue;
+
+        // proceed with insertion
+
+        nlocalprev = atom->nlocal;
+
+        // choose random velocity for new particle
+        // used for every atom in molecule
+
+        vnew[0] = vxlo + random->uniform() * (vxhi-vxlo);
+        vnew[1] = vylo + random->uniform() * (vyhi-vylo);
+        vnew[2] = vzlo + random->uniform() * (vzhi-vzlo);
+
+        // if target specified, change velocity vector accordingly
+
+        if (targetflag) {
+          double vel = sqrt(vnew[0]*vnew[0] + vnew[1]*vnew[1] + vnew[2]*vnew[2]);
+          delx = tx - coord[0];
+          dely = ty - coord[1];
+          delz = tz - coord[2];
+          double rsq = delx*delx + dely*dely + delz*delz;
+          if (rsq > 0.0) {
+            double rinv = sqrt(1.0/rsq);
+            vnew[0] = delx*rinv*vel;
+            vnew[1] = dely*rinv*vel;
+            vnew[2] = delz*rinv*vel;
+          }
+        }
+      }
+
+      // cout << "correct number " << coords[0][0] << " "<<
+      //   coords[0][1] << " " <<
+      //   coords[0][2] << endl;
+      // cout << "correct number " << coord[0] << " "<<
+      //   coord[1] << " " <<
+      //   coord[2] << endl;
+
+      if (flag_prob){
+        added++;
+        // out->coords has been allocated at the beginning with one element
+        // if the number of added particles is 1 the new coords will be placed in
+        // the array. Otherwise the array will be reallocated.
+        if (added==1){
+          // out->coord[0] = coord;
+          out->coord[0] = new double[3];
+          for(int uu = 0; uu < 3; uu++){
+            out->coord[0][uu] = coords[0][uu];
+          }
+        }else if (added > 1) {
+        double** pt = (double**) realloc(out->coord,1 + added * sizeof(out->coord[0]));
+          out->coord = pt;
+          out->coord[added-1] = new double[3];
+          // memcpy(&out->coord[added-1][0], &coords[0][0], sizeof(out->coord[0]));
+          // std::copy(&coords[0][0], &coords[0][2], &out->coord[added-1][0]);
+          // cout << "coords original: ";
+          for(int uu = 0; uu < 3; uu++){
+            // cout << coord[uu] << " ";
+            out->coord[added-1][uu] = coords[0][uu];
+          }
+          // cout << endl;
+        }
+      }
+    }
+  }
+  out->added = added;
+  // just for checking
+  for (int i = 0; i < added; i++){
+    
+    cout <<"added " << added  <<" local coords inside: " <<  out->coord[i][0] << " " << out->coord[i][1] << " " << out->coord[i][2] << endl;
+  //   for (int j =0 ; j < 3; j++){
+  //     cout << out->coord[i][j] <<  " ";
+    }
+  //   cout << endl;
+  // }
+}
+void FixDuplicate::add_particles(struct added_coord in){
+  double *newcoord;
+  int dimension = domain->dimension;
+  int n, imol, nlocalprev;
+  int flag_prob, flag, natom = 1;
+  double lamda[3], vnew[3], coord[3], quat[4];
+  double *sublo,*subhi;
+  int added_all = in.added;
+  int success = 1;
+      if (domain->triclinic == 0) {
+        sublo = domain->sublo;
+        subhi = domain->subhi;
+      } else {
+        sublo = domain->sublo_lamda;
+        subhi = domain->subhi_lamda;
+      }
+      for (int w = 0; w < added_all; w++){
+        copy(&in.coord[w][0], &in.coord[w][2], &coords[0][0]);
+
+        // check if new atoms are in my sub-box or above it if I am highest proc
+        // if so, add atom to my list via create_atom()
+        // initialize additional info about the atoms
+        // set group mask to "all" plus fix group
+        if (random->uniform() < prob) flag_prob = 1;
+        for (int m = 0; m < natom; m++) {
+          if (domain->triclinic) {
+            domain->x2lamda(coords[m],lamda);
+            newcoord = lamda;
+          }else{
+            for (int u = 0; u < 3; u++){
+              newcoord[u] = in.coord[w][u];
+            }
+          }
+
+          if (newcoord[0] >= sublo[0] && newcoord[0] < subhi[0] &&
+              newcoord[1] >= sublo[1] && newcoord[1] < subhi[1] &&
+              newcoord[2] >= sublo[2] && newcoord[2] < subhi[2]) flag = 1;
+          else if (dimension == 3 && newcoord[2] >= domain->boxhi[2]) {
+            if (comm->layout != Comm::LAYOUT_TILED) {
+              if (comm->myloc[2] == comm->procgrid[2]-1 &&
+                  newcoord[0] >= sublo[0] && newcoord[0] < subhi[0] &&
+                  newcoord[1] >= sublo[1] && newcoord[1] < subhi[1]) flag = 1;
+            } else {
+              if (comm->mysplit[2][1] == 1.0 &&
+                  newcoord[0] >= sublo[0] && newcoord[0] < subhi[0] &&
+                  newcoord[1] >= sublo[1] && newcoord[1] < subhi[1]) flag = 1;
+            }
+          } else if (dimension == 2 && newcoord[1] >= domain->boxhi[1]) {
+            if (comm->layout != Comm::LAYOUT_TILED) {
+              if (comm->myloc[1] == comm->procgrid[1]-1 &&
+                  newcoord[0] >= sublo[0] && newcoord[0] < subhi[0]) flag = 1;
+            } else {
+              if (comm->mysplit[1][1] == 1.0 &&
+                  newcoord[0] >= sublo[0] && newcoord[0] < subhi[0]) flag = 1;
+            }
+          }
+          // flag_prob=1;
+          if (flag && flag_prob) {
+            // to change in case of molecule?
+            // if (mode == ATOM) atom->avec->create_atom(ntype,coords[m]);
+            if (mode == ATOM) atom->avec->create_atom(ntype,newcoord);
+            else atom->avec->create_atom(ntype+onemols[imol]->type[m],coords[m]);
+            n = atom->nlocal - 1;
+            atom->tag[n] = maxtag_all + m+1;
+            if (mode == MOLECULE) {
+              if (atom->molecule_flag) {
+                if (onemols[imol]->moleculeflag) {
+                  atom->molecule[n] = maxmol_all + onemols[imol]->molecule[m];
+                } else {
+                  atom->molecule[n] = maxmol_all+1;
+                }
+              }
+              if (atom->molecular == Atom::TEMPLATE) {
+                atom->molindex[n] = 0;
+                atom->molatom[n] = m;
               }
             }
-            if (atom->molecular == Atom::TEMPLATE) {
-              atom->molindex[n] = 0;
-              atom->molatom[n] = m;
+            // set mask of source atom
+            atom->mask[n] = 1 | groupbit_source;
+            atom->image[n] = imageflags[m];
+            atom->v[n][0] = vnew[0];
+            atom->v[n][1] = vnew[1];
+            atom->v[n][2] = vnew[2];
+            if (mode == MOLECULE) {
+              onemols[imol]->quat_external = quat;
+              atom->add_molecule_atom(onemols[imol],m,n,maxtag_all);
             }
+            modify->create_attribute(n);
           }
-          // set mask of source atom
-          atom->mask[n] = 1 | groupbit_source;
-          atom->image[n] = imageflags[m];
-          atom->v[n][0] = vnew[0];
-          atom->v[n][1] = vnew[1];
-          atom->v[n][2] = vnew[2];
-          if (mode == MOLECULE) {
-            onemols[imol]->quat_external = quat;
-            atom->add_molecule_atom(onemols[imol],m,n,maxtag_all);
+        }
+
+        // FixRigidSmall::set_molecule stores rigid body attributes
+        //   coord is new position of geometric center of mol, not COM
+        // FixShake::set_molecule stores shake info for molecule
+
+        if (mode == MOLECULE) {
+          if (rigidflag)
+            fixrigid->set_molecule(nlocalprev,maxtag_all,imol,coord,vnew,quat);
+          else if (shakeflag)
+            fixshake->set_molecule(nlocalprev,maxtag_all,imol,coord,vnew,quat);
+        }
+
+        success = 1;
+        // break;
+      // }
+
+      // warn if not successful b/c too many attempts
+
+      if (!success && comm->me == 0)
+        error->warning(FLERR,"Particle deposition was unsuccessful");
+
+      // reset global natoms,nbonds,etc
+      // increment maxtag_all and maxmol_all if necessary
+      // if global map exists, reset it now instead of waiting for comm
+      //   since other pre-exchange fixes may use it
+      //   invoke map_init() b/c atom count has grown
+
+      if (success && flag_prob) {
+        atom->natoms += natom;
+        if (atom->natoms < 0)
+          error->all(FLERR,"Too many total atoms");
+        if (mode == MOLECULE) {
+          atom->nbonds += onemols[imol]->nbonds;
+          atom->nangles += onemols[imol]->nangles;
+          atom->ndihedrals += onemols[imol]->ndihedrals;
+          atom->nimpropers += onemols[imol]->nimpropers;
+        }
+        maxtag_all += natom;
+        if (maxtag_all >= MAXTAGINT)
+          error->all(FLERR,"New atom IDs exceed maximum allowed ID");
+        if (mode == MOLECULE && atom->molecule_flag) {
+          if (onemols[imol]->moleculeflag) {
+            maxmol_all += onemols[imol]->nmolecules;
+          } else {
+            maxmol_all++;
           }
-          modify->create_attribute(n);
         }
       }
 
-      // FixRigidSmall::set_molecule stores rigid body attributes
-      //   coord is new position of geometric center of mol, not COM
-      // FixShake::set_molecule stores shake info for molecule
+      // rebuild atom map
 
-      if (mode == MOLECULE) {
-        if (rigidflag)
-          fixrigid->set_molecule(nlocalprev,maxtag_all,imol,coord,vnew,quat);
-        else if (shakeflag)
-          fixshake->set_molecule(nlocalprev,maxtag_all,imol,coord,vnew,quat);
-      }
-
-      success = 1;
-      break;
-      if (success && flag_prob) ninserted++;
-    }
-
-    // warn if not successful b/c too many attempts
-
-    if (!success && comm->me == 0)
-      error->warning(FLERR,"Particle deposition was unsuccessful");
-
-    // reset global natoms,nbonds,etc
-    // increment maxtag_all and maxmol_all if necessary
-    // if global map exists, reset it now instead of waiting for comm
-    //   since other pre-exchange fixes may use it
-    //   invoke map_init() b/c atom count has grown
-
-    if (success && flag_prob) {
-      // cout << "ADDED" << endl;
-      atom->natoms += natom;
-      if (atom->natoms < 0)
-        error->all(FLERR,"Too many total atoms");
-      if (mode == MOLECULE) {
-        atom->nbonds += onemols[imol]->nbonds;
-        atom->nangles += onemols[imol]->nangles;
-        atom->ndihedrals += onemols[imol]->ndihedrals;
-        atom->nimpropers += onemols[imol]->nimpropers;
-      }
-      maxtag_all += natom;
-      if (maxtag_all >= MAXTAGINT)
-        error->all(FLERR,"New atom IDs exceed maximum allowed ID");
-      if (mode == MOLECULE && atom->molecule_flag) {
-        if (onemols[imol]->moleculeflag) {
-          maxmol_all += onemols[imol]->nmolecules;
-        } else {
-          maxmol_all++;
-        }
+      if (atom->map_style != Atom::MAP_NONE) {
+        // WARNING
+        // if (success) atom->map_init();
+        if (success && flag_prob) atom->map_init();
+        atom->map_set();
       }
     }
-
-    // rebuild atom map
-
-    if (atom->map_style != Atom::MAP_NONE) {
-      // WARNING
-      // if (success) atom->map_init();
-      if (success && flag_prob) atom->map_init();
-      // cout << "DEBUG" << endl;
-      atom->map_set();
-    }
-   }
-  }
   // next timestep to insert
   // next_reneighbor = 0 if done
 
@@ -664,6 +707,83 @@ void FixDuplicate::pre_exchange()
    */
   if (ninserted < ninsert) next_reneighbor += nfreq;
   else next_reneighbor = 0;
+  if (success && flag_prob) ninserted++;
+}
+void FixDuplicate::pre_exchange()
+{
+  struct added_coord out;
+  generate_positions(&out);
+  int rank;
+  MPI_Comm_rank(world, &rank);
+  int local_added = out.added * 3;
+  int global_added = 0;
+  // get global added particles, sum of local added particles
+  MPI_Allreduce(&out.added, &global_added, 1, MPI_INT, MPI_SUM, world);
+
+  double** local_coords = out.coord;
+  int max_rank;
+  MPI_Allreduce(&rank, &max_rank, 1, MPI_INT, MPI_MAX, world);
+  // count also proc 0
+  max_rank += 1;
+  int counts[max_rank];
+  MPI_Allgather(&local_added, 1, MPI_INT, counts, 1, MPI_INT, world);
+  int count_sum = 0;
+  int displs[max_rank] = {0};
+  for (int i = 0; i < max_rank ; i++){
+    count_sum += counts[i];
+  }
+  displs[0] = 0;
+  for (int i = 0; i < max_rank -1 ; i++){
+    displs[i+1] = displs[i] + counts[i];
+  }
+  // create flat buffer
+  double *global_coords_buffer = new double[count_sum];
+  // flat the local_coords array to sendit with MPI
+  double *local_coords_flat = new double[count_sum];
+
+  for (int i = 0; i < out.added; i++){
+    cout << "out added " << out.added  << "count_sum " << count_sum << " global added " << global_added << endl;
+    // cout <<"local coords original: " <<  out.coord[i][0] << " " << out.coord[i][1] << " " << out.coord[i][2] << endl;
+    for(int j = 0; j < 3; j++){
+      // cout << "times " << i * 3 +j << " local coords " << local_coords[i][j] << endl;
+      local_coords_flat[i*3+j] = local_coords[i][j];
+    }
+  }
+  // for (int i = 0; i < count_sum; i++){
+  //   if (rank == 0)
+  //     cout << "flat coords: " << local_coords_flat[i] << endl;
+  // }
+  MPI_Allgatherv(local_coords_flat, local_added, MPI_DOUBLE, global_coords_buffer, counts, displs, MPI_DOUBLE, world);
+  // for (int i = 0; i< count_sum; i++){
+  //   if (rank == 0)
+  //     cout << "global buffer coord: " << global_coords_buffer[i] << endl << "count_sum = " << count_sum<<endl;;
+  // }
+  // rebuild global_coords from flat array and counts
+  double **global_coords = new double*[global_added];
+  // global_coords = (double**) malloc(sizeof(double*));
+  for (int i = 0; i < global_added; i++){
+    global_coords[i] = new double[3];
+    for (int j = 0; j < 3; j++){
+      global_coords[i][j] = global_coords_buffer[i*3+j];
+    }
+  }
+  struct added_coord global_out;
+  global_out.added = global_added;
+  global_out.coord = global_coords;
+  // for (int i = 0; i < global_out.added; i++){
+  //   cout << "output coord: ";
+  //   for (int j =0 ; j < 3; j++){
+  //     if (rank == 0)
+  //     cout  << global_out.coord[i][j] << " ";
+  //   }
+  //   cout << " \n" ;
+  // }
+  if (rank == 0)
+  cout << "BEFORE\n" << endl;
+  add_particles(global_out);
+  // delete[] out.coord;
+  // delete out;
+  // cout << "rank " << rank << " added " << added << " nlocal " << nlocal << endl;
 }
 
 /* ----------------------------------------------------------------------
@@ -695,7 +815,6 @@ void FixDuplicate::find_maxid()
 void FixDuplicate::options(int narg, char **arg)
 {
   // defaults
-
   iregion = nullptr;
   idregion = nullptr;
   mode = ATOM;
