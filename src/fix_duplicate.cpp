@@ -68,27 +68,33 @@ FixDuplicate::FixDuplicate(LAMMPS *lmp, int narg, char **arg) :
 
   ninsert = utils::inumeric(FLERR,arg[3],false,lmp);
   ntype = utils::inumeric(FLERR,arg[4],false,lmp);
-  nfreq = utils::inumeric(FLERR,arg[5],false,lmp);
-  seed = utils::inumeric(FLERR,arg[6],false,lmp);
-  prob = utils::numeric(FLERR,arg[7],false,lmp);
-  radius = utils::numeric(FLERR,arg[8],false,lmp);
+  group_child = utils::inumeric(FLERR, arg[5], false, lmp);
+  nfreq = utils::inumeric(FLERR,arg[6],false,lmp);
+  seed = utils::inumeric(FLERR,arg[7],false,lmp);
+  prob = utils::numeric(FLERR,arg[8],false,lmp);
+  radius = utils::numeric(FLERR,arg[9],false,lmp);
   // in case it will uses groups names
-  group_source = group->find(arg[4]);
-  group_source = utils::inumeric(FLERR, arg[4], false, lmp);
-  groupbit_source = group->bitmask[group_source];
-  // cout << "group: " << group_source << " " << groupbit_source ;
+  // group_source = group->find(arg[4]);
+  // group_source = utils::inumeric(FLERR, arg[4], false, lmp);
+  groupbit_source = group->bitmask[ntype];
+  groupbit_child = group->bitmask[group_child];
+  // cout << "group parent: " << ntype << " " << groupbit_source << endl;
+  // cout << "group child : " << group_child << " " << groupbit_child << endl;
   if (prob < 0.0 || prob > 1.0) error->all(FLERR, "Probability must be in [0,1] interval");
-  if (radius < 0.0) error->all(FLERR, "Radius must be greater than 0.0");
+  if (radius <= 0.0) error->all(FLERR, "Radius must be greater than 0.0");
   if (seed <= 0) error->all(FLERR,"Illegal fix deposit command");
 
   // read options from end of input line
 
-  options(narg-9,&arg[9]);
+  options(narg-10,&arg[10]);
 
   // error check on type
 
   if (mode == ATOM && (ntype <= 0 || ntype > atom->ntypes))
-    error->all(FLERR,"Invalid atom type in fix deposit command");
+    error->all(FLERR,"Invalid atom type (parent) in fix duplicate command");
+
+  if (mode == ATOM && (group_child <= 0 || group_child > atom->ntypes))
+    error->all(FLERR,"Invalid atom type (child) in fix duplicate command");
 
   // error checks on region and its extent being inside simulation box
 
@@ -600,7 +606,7 @@ void FixDuplicate::add_particles(struct added_coord in){
             // if (mode == ATOM) atom->avec->create_atom(ntype,coords[m]);
 
             if (!domain->ownatom(maxmol_all + m + 1, newcoord, nullptr, 1)) continue;
-            if (mode == ATOM) atom->avec->create_atom(ntype,newcoord);
+            if (mode == ATOM) atom->avec->create_atom(group_child,newcoord);
             // else atom->avec->create_atom(ntype+onemols[imol]->type[m],coords[m]);
             else atom->avec->create_atom(ntype+onemols[imol]->type[m],newcoord);
             n = atom->nlocal - 1;
@@ -619,7 +625,7 @@ void FixDuplicate::add_particles(struct added_coord in){
               }
             }
             // set mask of source atom
-            atom->mask[n] = 1 | groupbit_source;
+            atom->mask[n] = 1 | groupbit_child;
             atom->image[n] = imageflags[m];
             atom->v[n][0] = vnew[0];
             atom->v[n][1] = vnew[1];
