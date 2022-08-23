@@ -77,7 +77,6 @@ FixDuplicate::FixDuplicate(LAMMPS *lmp, int narg, char **arg) :
   group_source = utils::inumeric(FLERR, arg[4], false, lmp);
   groupbit_source = group->bitmask[group_source];
   // cout << "group: " << group_source << " " << groupbit_source ;
-  // cout << " arg " << arg[4] << " ntype " << ntype << endl;
   if (prob < 0.0 || prob > 1.0) error->all(FLERR, "Probability must be in [0,1] interval");
   if (radius < 0.0) error->all(FLERR, "Radius must be greater than 0.0");
   if (seed <= 0) error->all(FLERR,"Illegal fix deposit command");
@@ -311,11 +310,6 @@ void FixDuplicate::setup_pre_exchange()
   else next_reneighbor = 0;
 }
 
-// struct added_coord{
-//   int added;
-//   double** coord;
-// };
-
 /* ----------------------------------------------------------------------
    perform particle insertion
 ------------------------------------------------------------------------- */
@@ -366,7 +360,6 @@ void FixDuplicate::generate_positions(struct added_coord *out){
       double offset = 0.0;
       if (rateflag) offset = (update->ntimestep - nfirst) * update->dt * rate;
       // moved
-      // double *sublo,*subhi;
       if (domain->triclinic == 0) {
         sublo = domain->sublo;
         subhi = domain->subhi;
@@ -390,7 +383,6 @@ void FixDuplicate::generate_positions(struct added_coord *out){
         // choose random position for new particle within region
         if (distflag == DIST_UNIFORM) {
           // do {
-          // cout << "generating new coord:\n";
           coord[0] = xlo + random->uniform() * (xhi-xlo);
           coord[1] = ylo + random->uniform() * (yhi-ylo);
           coord[2] = zlo + random->uniform() * (zhi-zlo);
@@ -503,20 +495,12 @@ void FixDuplicate::generate_positions(struct added_coord *out){
         }
       }
 
-      // cout << "correct number " << coords[0][0] << " "<<
-      //   coords[0][1] << " " <<
-      //   coords[0][2] << endl;
-      // cout << "correct number " << coord[0] << " "<<
-      //   coord[1] << " " <<
-      //   coord[2] << endl;
-
       if (flag_prob){
         added++;
         // out->coords has been allocated at the beginning with one element
         // if the number of added particles is 1 the new coords will be placed in
         // the array. Otherwise the array will be reallocated.
         if (added==1){
-          // out->coord[0] = coord;
           out->coord[0] = new double[3];
           for(int uu = 0; uu < 3; uu++){
             out->coord[0][uu] = coords[0][uu];
@@ -525,30 +509,24 @@ void FixDuplicate::generate_positions(struct added_coord *out){
         double** pt = (double**) realloc(out->coord,1 + added * sizeof(out->coord[0]));
           out->coord = pt;
           out->coord[added-1] = new double[3];
-          // memcpy(&out->coord[added-1][0], &coords[0][0], sizeof(out->coord[0]));
-          // std::copy(&coords[0][0], &coords[0][2], &out->coord[added-1][0]);
-          // cout << "coords original: ";
           for(int uu = 0; uu < 3; uu++){
-            // cout << coord[uu] << " ";
             out->coord[added-1][uu] = coords[0][uu];
           }
-          // cout << endl;
         }
       }
     }
   }
+  // if (rank == 0) test
   out->added = added;
-  // just for checking
-  for (int i = 0; i < added; i++){
-    
-    cout <<"added " << added  <<" local coords inside: " <<  out->coord[i][0] << " " << out->coord[i][1] << " " << out->coord[i][2] << endl;
-  //   for (int j =0 ; j < 3; j++){
-  //     cout << out->coord[i][j] <<  " ";
-    }
-  //   cout << endl;
-  // }
 }
+
 void FixDuplicate::add_particles(struct added_coord in){
+  /*
+   * nfreq = total to add per step
+   * ninsert = total amount of particles to add in whole simulation
+   * nlocal = particles of current processor
+   * ninserted = inserted particles
+   */
   double *newcoord;
   int dimension = domain->dimension;
   int n, imol, nlocalprev;
@@ -557,6 +535,8 @@ void FixDuplicate::add_particles(struct added_coord in){
   double *sublo,*subhi;
   int added_all = in.added;
   int success = 1;
+  int rank = 0;
+  MPI_Comm_rank(world, &rank);
       if (domain->triclinic == 0) {
         sublo = domain->sublo;
         subhi = domain->subhi;
@@ -572,9 +552,11 @@ void FixDuplicate::add_particles(struct added_coord in){
         // initialize additional info about the atoms
         // set group mask to "all" plus fix group
         if (random->uniform() < prob) flag_prob = 1;
+        int nlocal = atom->nlocal;
         for (int m = 0; m < natom; m++) {
           if (domain->triclinic) {
-            domain->x2lamda(coords[m],lamda);
+            // domain->x2lamda(coords[m],lamda);
+            domain->x2lamda(newcoord,lamda);
             newcoord = lamda;
           }else{
             for (int u = 0; u < 3; u++){
@@ -608,8 +590,11 @@ void FixDuplicate::add_particles(struct added_coord in){
           if (flag && flag_prob) {
             // to change in case of molecule?
             // if (mode == ATOM) atom->avec->create_atom(ntype,coords[m]);
+
+            if (!domain->ownatom(maxmol_all + m + 1, newcoord, nullptr, 1)) continue;
             if (mode == ATOM) atom->avec->create_atom(ntype,newcoord);
-            else atom->avec->create_atom(ntype+onemols[imol]->type[m],coords[m]);
+            // else atom->avec->create_atom(ntype+onemols[imol]->type[m],coords[m]);
+            else atom->avec->create_atom(ntype+onemols[imol]->type[m],newcoord);
             n = atom->nlocal - 1;
             atom->tag[n] = maxtag_all + m+1;
             if (mode == MOLECULE) {
@@ -642,7 +627,7 @@ void FixDuplicate::add_particles(struct added_coord in){
         // FixRigidSmall::set_molecule stores rigid body attributes
         //   coord is new position of geometric center of mol, not COM
         // FixShake::set_molecule stores shake info for molecule
-
+        // nlocalprev = atom->nlocal;
         if (mode == MOLECULE) {
           if (rigidflag)
             fixrigid->set_molecule(nlocalprev,maxtag_all,imol,coord,vnew,quat);
@@ -688,10 +673,7 @@ void FixDuplicate::add_particles(struct added_coord in){
       }
 
       // rebuild atom map
-
       if (atom->map_style != Atom::MAP_NONE) {
-        // WARNING
-        // if (success) atom->map_init();
         if (success && flag_prob) atom->map_init();
         atom->map_set();
       }
@@ -699,33 +681,30 @@ void FixDuplicate::add_particles(struct added_coord in){
   // next timestep to insert
   // next_reneighbor = 0 if done
 
-  /*
-   * nfreq = total to add per step
-   * ninsert = total amount of particles to add in whole simulation
-   * nlocal = particles of current processor
-   * ninserted = inserted particles
-   */
   if (ninserted < ninsert) next_reneighbor += nfreq;
   else next_reneighbor = 0;
   if (success && flag_prob) ninserted++;
+  // clean temporary array
+  delete [] in.coord;
 }
 void FixDuplicate::pre_exchange()
 {
   struct added_coord out;
+  // each processor will generate the position of the new particles 
   generate_positions(&out);
+  // get rank and total rank
   int rank;
   MPI_Comm_rank(world, &rank);
+  int max_rank;
+  MPI_Comm_size(world, &max_rank);
   int local_added = out.added * 3;
   int global_added = 0;
-  // get global added particles, sum of local added particles
+  int nlocal = atom->nlocal;
   MPI_Allreduce(&out.added, &global_added, 1, MPI_INT, MPI_SUM, world);
 
   double** local_coords = out.coord;
-  int max_rank;
-  MPI_Allreduce(&rank, &max_rank, 1, MPI_INT, MPI_MAX, world);
-  // count also proc 0
-  max_rank += 1;
   int counts[max_rank];
+  if (!idnext) find_maxid();
   MPI_Allgather(&local_added, 1, MPI_INT, counts, 1, MPI_INT, world);
   int count_sum = 0;
   int displs[max_rank] = {0};
@@ -736,31 +715,21 @@ void FixDuplicate::pre_exchange()
   for (int i = 0; i < max_rank -1 ; i++){
     displs[i+1] = displs[i] + counts[i];
   }
-  // create flat buffer
-  double *global_coords_buffer = new double[count_sum];
   // flat the local_coords array to sendit with MPI
   double *local_coords_flat = new double[count_sum];
-
+  // place all local coordinate in a flat array (assuming that each coordinate has x,y,z values)
   for (int i = 0; i < out.added; i++){
-    cout << "out added " << out.added  << "count_sum " << count_sum << " global added " << global_added << endl;
-    // cout <<"local coords original: " <<  out.coord[i][0] << " " << out.coord[i][1] << " " << out.coord[i][2] << endl;
     for(int j = 0; j < 3; j++){
-      // cout << "times " << i * 3 +j << " local coords " << local_coords[i][j] << endl;
       local_coords_flat[i*3+j] = local_coords[i][j];
     }
   }
-  // for (int i = 0; i < count_sum; i++){
-  //   if (rank == 0)
-  //     cout << "flat coords: " << local_coords_flat[i] << endl;
-  // }
+  // create flat global buffer
+  double *global_coords_buffer = new double[count_sum];
+  // gather array (the same for all processors) that contains all particles coordinates previously generated
   MPI_Allgatherv(local_coords_flat, local_added, MPI_DOUBLE, global_coords_buffer, counts, displs, MPI_DOUBLE, world);
-  // for (int i = 0; i< count_sum; i++){
-  //   if (rank == 0)
-  //     cout << "global buffer coord: " << global_coords_buffer[i] << endl << "count_sum = " << count_sum<<endl;;
-  // }
-  // rebuild global_coords from flat array and counts
+
+  // rebuild global_coords adding all coordinates in the global array
   double **global_coords = new double*[global_added];
-  // global_coords = (double**) malloc(sizeof(double*));
   for (int i = 0; i < global_added; i++){
     global_coords[i] = new double[3];
     for (int j = 0; j < 3; j++){
@@ -770,20 +739,8 @@ void FixDuplicate::pre_exchange()
   struct added_coord global_out;
   global_out.added = global_added;
   global_out.coord = global_coords;
-  // for (int i = 0; i < global_out.added; i++){
-  //   cout << "output coord: ";
-  //   for (int j =0 ; j < 3; j++){
-  //     if (rank == 0)
-  //     cout  << global_out.coord[i][j] << " ";
-  //   }
-  //   cout << " \n" ;
-  // }
-  if (rank == 0)
-  cout << "BEFORE\n" << endl;
+  // add the particles to the system
   add_particles(global_out);
-  // delete[] out.coord;
-  // delete out;
-  // cout << "rank " << rank << " added " << added << " nlocal " << nlocal << endl;
 }
 
 /* ----------------------------------------------------------------------

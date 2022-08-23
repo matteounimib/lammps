@@ -11,6 +11,7 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
+#include <vector>
 #ifdef FIX_CLASS
 // clang-format off
 FixStyle(duplicate,FixDuplicate);
@@ -26,6 +27,10 @@ namespace LAMMPS_NS {
 
 class FixDuplicate : public Fix {
  public:
+  struct added_coord {
+    int added;
+    double **coord;
+  };
   FixDuplicate(class LAMMPS *, int, char **);
   ~FixDuplicate() override;
   int setmask() override;
@@ -35,9 +40,10 @@ class FixDuplicate : public Fix {
   void write_restart(FILE *) override;
   void restart(char *) override;
   void *extract(const char *, int &) override;
+  
 
  private:
-  int ninsert, ntype, nfreq, seed;
+  int ninsert, ntype, nfreq, seed, added_all;
   int globalflag, localflag, maxattempt, rateflag, scaleflag, targetflag;
   int mode, rigidflag, shakeflag, idnext, distflag, orientflag;
   int groupbit_source, group_source;
@@ -65,6 +71,10 @@ class FixDuplicate : public Fix {
 
   void find_maxid();
   void options(int, char **);
+  // std::vector<double*> generate_positions();
+  // void add_particles(std::vector<double *>);
+  void generate_positions(struct added_coord*);
+  void add_particles(struct added_coord);
 };
 
 }    // namespace LAMMPS_NS
