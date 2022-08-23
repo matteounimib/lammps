@@ -28,8 +28,12 @@ namespace LAMMPS_NS {
 class FixDuplicate : public Fix {
  public:
   struct added_coord {
+    // number of particles
     int added;
+    // coordinates
     double **coord;
+    // velocities
+    double **vel;
   };
   FixDuplicate(class LAMMPS *, int, char **);
   ~FixDuplicate() override;

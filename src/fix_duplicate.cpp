@@ -73,7 +73,7 @@ FixDuplicate::FixDuplicate(LAMMPS *lmp, int narg, char **arg) :
   prob = utils::numeric(FLERR,arg[7],false,lmp);
   radius = utils::numeric(FLERR,arg[8],false,lmp);
   // in case it will uses groups names
-  // group_source = group->find(arg[4]);
+  group_source = group->find(arg[4]);
   group_source = utils::inumeric(FLERR, arg[4], false, lmp);
   groupbit_source = group->bitmask[group_source];
   // cout << "group: " << group_source << " " << groupbit_source ;
@@ -330,6 +330,7 @@ void FixDuplicate::generate_positions(struct added_coord *out){
   int dimension = domain->dimension;
   int rank = 0;
   out->coord = (double**) malloc(sizeof(double*));
+  out->vel = (double**) malloc(sizeof(double*));
   for (int q = 0; q < nlocal; q++){
     if(mask[q] & groupbit_source){
       flag_prob = 0;
@@ -502,15 +503,21 @@ void FixDuplicate::generate_positions(struct added_coord *out){
         // the array. Otherwise the array will be reallocated.
         if (added==1){
           out->coord[0] = new double[3];
+          out->vel[0] = new double[3];
           for(int uu = 0; uu < 3; uu++){
             out->coord[0][uu] = coords[0][uu];
+            out->vel[0][uu] = vnew[uu];
           }
         }else if (added > 1) {
-        double** pt = (double**) realloc(out->coord,1 + added * sizeof(out->coord[0]));
-          out->coord = pt;
+        double** pt_coord = (double**) realloc(out->coord,1 + added * sizeof(out->coord[0]));
+        double** pt_vel = (double**) realloc(out->vel, 1 + added * sizeof(out->vel[0]));
+          out->coord = pt_coord;
+          out->vel = pt_vel;
           out->coord[added-1] = new double[3];
+          out->vel[added-1] = new double[3];
           for(int uu = 0; uu < 3; uu++){
             out->coord[added-1][uu] = coords[0][uu];
+            out->vel[added-1][uu] = vnew[uu];
           }
         }
       }
@@ -546,6 +553,7 @@ void FixDuplicate::add_particles(struct added_coord in){
       }
       for (int w = 0; w < added_all; w++){
         copy(&in.coord[w][0], &in.coord[w][2], &coords[0][0]);
+        copy(&in.vel[w][0], &in.vel[w][2], &vnew[0]);
 
         // check if new atoms are in my sub-box or above it if I am highest proc
         // if so, add atom to my list via create_atom()
@@ -686,9 +694,12 @@ void FixDuplicate::add_particles(struct added_coord in){
   if (success && flag_prob) ninserted++;
   // clean temporary array
   delete [] in.coord;
+  delete [] in.vel;
 }
 void FixDuplicate::pre_exchange()
 {
+  /* MODE = ATOM = 0
+     MODE = MOLECULE = 1*/
   struct added_coord out;
   // each processor will generate the position of the new particles 
   generate_positions(&out);
@@ -706,27 +717,40 @@ void FixDuplicate::pre_exchange()
   int counts[max_rank];
   if (!idnext) find_maxid();
   MPI_Allgather(&local_added, 1, MPI_INT, counts, 1, MPI_INT, world);
+  // create count data for MPI_Allgatherv
   int count_sum = 0;
-  int displs[max_rank] = {0};
   for (int i = 0; i < max_rank ; i++){
     count_sum += counts[i];
   }
+
+  // create displacements data for MPI_Allgatherv
+  int displs[max_rank] = {0};
   displs[0] = 0;
   for (int i = 0; i < max_rank -1 ; i++){
     displs[i+1] = displs[i] + counts[i];
   }
-  // flat the local_coords array to sendit with MPI
-  double *local_coords_flat = new double[count_sum];
+
+  // create a flat the local_coords array to sendit with MPI;
   // place all local coordinate in a flat array (assuming that each coordinate has x,y,z values)
+  double *local_coords_flat = new double[count_sum];
   for (int i = 0; i < out.added; i++){
     for(int j = 0; j < 3; j++){
       local_coords_flat[i*3+j] = local_coords[i][j];
     }
   }
+  double *local_vel_flat = new double[count_sum];
+  for (int i = 0; i < out.added; i++){
+    for(int j = 0; j < 3; j++){
+      local_coords_flat[i*3+j] = local_coords[i][j];
+    }
+  }
+
   // create flat global buffer
   double *global_coords_buffer = new double[count_sum];
+  double *global_vel_buffer = new double[count_sum];
   // gather array (the same for all processors) that contains all particles coordinates previously generated
   MPI_Allgatherv(local_coords_flat, local_added, MPI_DOUBLE, global_coords_buffer, counts, displs, MPI_DOUBLE, world);
+  MPI_Allgatherv(local_vel_flat, local_added, MPI_DOUBLE, global_vel_buffer, counts, displs, MPI_DOUBLE, world);
 
   // rebuild global_coords adding all coordinates in the global array
   double **global_coords = new double*[global_added];
@@ -736,9 +760,17 @@ void FixDuplicate::pre_exchange()
       global_coords[i][j] = global_coords_buffer[i*3+j];
     }
   }
+  double **global_vel = new double*[global_added];
+  for (int i = 0; i < global_added; i++){
+    global_vel[i] = new double[3];
+    for (int j = 0; j < 3; j++){
+      global_vel[i][j] = global_vel_buffer[i*3+j];
+    }
+  }
   struct added_coord global_out;
   global_out.added = global_added;
   global_out.coord = global_coords;
+  global_out.vel = global_vel;
   // add the particles to the system
   add_particles(global_out);
 }
