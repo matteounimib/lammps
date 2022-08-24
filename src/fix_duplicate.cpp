@@ -320,21 +320,18 @@ void FixDuplicate::setup_pre_exchange()
    perform particle insertion
 ------------------------------------------------------------------------- */
 void FixDuplicate::generate_positions(struct added_coord *out){
-  int i,m,n,nlocalprev,imol,natom,flag,flagall, flag_prob;
-  double coord[3],lamda[3],delx,dely,delz,rsq;
+  int i,m,nlocalprev,imol,natom,flag,flag_prob;
+  double coord[3],delx,dely,delz,rsq;
   double r[3],vnew[3],rotmat[3][3],quat[4];
   flag_prob = 0;
-  int success, added = 0;
+  int added = 0;
   int nlocal = atom->nlocal;
   int *mask = atom->mask;
   double **x = atom->x;
-  double tempcoord[3];
   double** localCoord = {};
-  double** coord_tmp = {};
   vector<double*> localVel = {};
   double *sublo,*subhi;
   int dimension = domain->dimension;
-  int rank = 0;
   out->coord = (double**) malloc(sizeof(double*));
   out->vel = (double**) malloc(sizeof(double*));
   for (int q = 0; q < nlocal; q++){
@@ -471,12 +468,11 @@ void FixDuplicate::generate_positions(struct added_coord *out){
             if (rsq < nearsq) flag = 1;
           }
         }
-        // MPI_Allreduce(&flag,&flagall,1,MPI_INT,MPI_MAX,world);
         // if (flagall) continue;
 
         // proceed with insertion
 
-        nlocalprev = atom->nlocal;
+        //nlocalprev = atom->nlocal; not needed?
 
         // choose random velocity for new particle
         // used for every atom in molecule
@@ -501,7 +497,6 @@ void FixDuplicate::generate_positions(struct added_coord *out){
           }
         }
       }
-
       if (flag_prob){
         added++;
         // out->coords has been allocated at the beginning with one element
@@ -529,7 +524,6 @@ void FixDuplicate::generate_positions(struct added_coord *out){
       }
     }
   }
-  // if (rank == 0) test
   out->added = added;
 }
 
@@ -548,8 +542,8 @@ void FixDuplicate::add_particles(struct added_coord in){
   double *sublo,*subhi;
   int added_all = in.added;
   int success = 1;
-  int rank = 0;
-  MPI_Comm_rank(world, &rank);
+  int nlocal = atom->nlocal;
+
       if (domain->triclinic == 0) {
         sublo = domain->sublo;
         subhi = domain->subhi;
@@ -566,7 +560,6 @@ void FixDuplicate::add_particles(struct added_coord in){
         // initialize additional info about the atoms
         // set group mask to "all" plus fix group
         if (random->uniform() < prob) flag_prob = 1;
-        int nlocal = atom->nlocal;
         for (int m = 0; m < natom; m++) {
           if (domain->triclinic) {
             // domain->x2lamda(coords[m],lamda);
@@ -719,7 +712,6 @@ void FixDuplicate::pre_exchange()
   int nlocal = atom->nlocal;
   MPI_Allreduce(&out.added, &global_added, 1, MPI_INT, MPI_SUM, world);
 
-  double** local_coords = out.coord;
   int counts[max_rank];
   if (!idnext) find_maxid();
   MPI_Allgather(&local_added, 1, MPI_INT, counts, 1, MPI_INT, world);
@@ -728,7 +720,6 @@ void FixDuplicate::pre_exchange()
   for (int i = 0; i < max_rank ; i++){
     count_sum += counts[i];
   }
-
   // create displacements data for MPI_Allgatherv
   int displs[max_rank] = {0};
   displs[0] = 0;
@@ -741,13 +732,13 @@ void FixDuplicate::pre_exchange()
   double *local_coords_flat = new double[count_sum];
   for (int i = 0; i < out.added; i++){
     for(int j = 0; j < 3; j++){
-      local_coords_flat[i*3+j] = local_coords[i][j];
+      local_coords_flat[i*3+j] = out.coord[i][j];
     }
   }
   double *local_vel_flat = new double[count_sum];
   for (int i = 0; i < out.added; i++){
     for(int j = 0; j < 3; j++){
-      local_coords_flat[i*3+j] = local_coords[i][j];
+      local_vel_flat[i*3+j] = out.vel[i][j];
     }
   }
 
